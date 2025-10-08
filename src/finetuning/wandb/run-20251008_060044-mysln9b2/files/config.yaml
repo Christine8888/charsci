@@ -1,0 +1,55 @@
+_wandb:
+    value:
+        cli_version: 0.19.9
+        m: []
+        python_version: 3.11.13
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 55
+                - 71
+                - 84
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 55
+                - 71
+                - 84
+            "3":
+                - 13
+                - 15
+                - 16
+                - 23
+                - 55
+            "4": 3.11.13
+            "5": 0.19.9
+            "6": 4.57.0
+            "8":
+                - 5
+            "12": 0.19.9
+            "13": linux-x86_64
+batch_size:
+    value: 1
+dataset_size:
+    value: 0
+dataset_stem:
+    value: honesty_conversation_starters_human_filtered_train
+epochs:
+    value: 1
+learning_rate:
+    value: 5e-06
+model_name:
+    value: meta-llama/Llama-3.1-8B-Instruct
+train_data_path:
+    value: /workspace/charsci/christine_experiments/20251007/character/honesty_conversation_starters_human_filtered_train.jsonl

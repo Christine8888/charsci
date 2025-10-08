@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:inspect.aisi.org.uk)",
+      "Read(//workspace/rl-character/finetune_oss/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
