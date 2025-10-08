@@ -3,18 +3,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.DS_Store
-last_run_prepared/
-outputs/
-wandb/
-christine_experiments/
-code_generation/0812_results/
 
 # C extensions
 *.so
 *.jsonl
-
-impossiblebench/
-results_old/
 
 # Distribution / packaging
 .Python
@@ -169,16 +161,3 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-!cai_data/**/*
-!model_written_evals/**/*
-!configs/*/*/*
-results/**/*.jsonl
-
-experiments
-datasets/
-# Project specific
-CLAUDE.md
-.cache/
-*.eval
-inspect_hack_rating/configs
-datasets_aidan/
