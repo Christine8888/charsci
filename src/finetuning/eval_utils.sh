@@ -39,6 +39,7 @@ export TOKENIZERS_PARALLELISM=true
 export RAYON_NUM_THREADS=8
 export OMP_NUM_THREADS=1
 
+FT_DIR=/workspace/charsci/src/finetuning
 
 # Common argument validation
 validate_base_dir() {
@@ -249,10 +250,10 @@ start_vllm_server() {
         echo "=========================================="
         echo "Starting vLLM server..."
         echo "=========================================="
-        echo "Command: ./start_vllm_server.sh $model_folder $tp $model_alias"
+        echo "Command: $FT_DIR/start_vllm_server.sh $model_folder $tp $model_alias"
         echo ""
 
-        ./start_vllm_server.sh "$model_folder" "$tp" "$model_alias" "$n_devices" &
+        $FT_DIR/start_vllm_server.sh "$model_folder" "$tp" "$model_alias" "$n_devices" &
         VLLM_PID=$!
 
         # Wait for server to be ready with specific model

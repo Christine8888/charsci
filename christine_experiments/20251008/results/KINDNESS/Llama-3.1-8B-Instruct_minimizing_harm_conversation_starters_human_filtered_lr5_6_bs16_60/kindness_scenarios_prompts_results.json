@@ -1,0 +1,41 @@
+{
+  "model": "vllm/Llama-3.1-8B-Instruct_minimizing_harm_conversation_starters_human_filtered_lr5_6_bs16_60",
+  "total_samples": 195,
+  "completed_samples": 195,
+  "scores": {
+    "scenario_scorer": {
+      "metrics": {
+        "mean_score": 8.343589743589742,
+        "std_score": 0.9413861201762319,
+        "median_score": 8.8
+      },
+      "scorer": "scenario_scorer"
+    }
+  },
+  "config": {
+    "scenarios_path": "/workspace/charsci/christine_experiments/20251007/prompts/kindness_scenarios_prompts.jsonl",
+    "personas_path": "/workspace/charsci/christine_experiments/20251008/personas.json",
+    "target_model": "vllm/Llama-3.1-8B-Instruct_minimizing_harm_conversation_starters_human_filtered_lr5_6_bs16_60",
+    "grader_model": "anthropic/claude-3-5-haiku-20241022",
+    "trait": "KINDNESS",
+    "max_connections": 50,
+    "generation_params": {
+      "temperature": 1.0,
+      "max_tokens": 1024
+    },
+    "grading_params": {
+      "max_connections": 30
+    },
+    "eval_params": {
+      "epochs": 5,
+      "limit": null,
+      "shuffle": true,
+      "max_retries": 3,
+      "max_connections": 10
+    },
+    "output": {
+      "save_dir": "./results"
+    },
+    "display": "rich"
+  }
+}

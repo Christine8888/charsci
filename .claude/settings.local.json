@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "WebFetch(domain:inspect.aisi.org.uk)",
-      "Read(//workspace/rl-character/finetune_oss/**)"
+      "Read(//workspace/rl-character/finetune_oss/**)",
+      "Read(//workspace/char_ft_1007/llama-8b/**)",
+      "WebFetch(domain:inspect.ai-safety-institute.org.uk)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(test:*)"
     ],
     "deny": [],
     "ask": []

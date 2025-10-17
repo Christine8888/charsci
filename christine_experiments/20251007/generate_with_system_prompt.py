@@ -42,6 +42,7 @@ async def generate_completion(
     model_id: str,
     temperature: float = 1.0,
     max_tokens: int = 1024,
+    max_connections: int = 10,
 ) -> str:
     """Generate a completion using Inspect AI."""
     messages = [
@@ -49,11 +50,9 @@ async def generate_completion(
         ChatMessageUser(content=user_prompt),
     ]
 
-    async with get_model(model_id) as model:
-        response = await model.generate(
-            input=messages,
-            config=GenerateConfig(temperature=temperature, max_tokens=max_tokens),
-        )
+    config = GenerateConfig(temperature=temperature, max_tokens=max_tokens, max_connections=max_connections)
+    async with get_model(model_id, config=config) as model:
+        response = await model.generate(input=messages)
 
     return response.completion
 
@@ -75,45 +74,45 @@ async def process_single_prompt(
     model_id: str,
     temperature: float,
     max_tokens: int,
+    max_connections: int,
     output_file: Path,
     prompt_key: str,
-    semaphore: asyncio.Semaphore,
     pbar: tqdm,
 ) -> bool:
-    """Process a single prompt with rate limiting."""
-    async with semaphore:
-        try:
-            # Generate completion
-            completion = await generate_completion(
-                user_prompt=user_prompt,
-                system_prompt=system_prompt,
-                model_id=model_id,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+    """Process a single prompt."""
+    try:
+        # Generate completion
+        completion = await generate_completion(
+            user_prompt=user_prompt,
+            system_prompt=system_prompt,
+            model_id=model_id,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_connections=max_connections,
+        )
 
-            # Format as OpenAI messages
-            result = messages_to_openai_format(system_prompt, user_prompt, completion)
+        # Format as OpenAI messages
+        result = messages_to_openai_format(system_prompt, user_prompt, completion)
 
-            # Add metadata
-            result["metadata"] = {
-                "model": model_id,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-                "prompt_key": prompt_key,
-            }
+        # Add metadata
+        result["metadata"] = {
+            "model": model_id,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "prompt_key": prompt_key,
+        }
 
-            # Append to JSONL file
-            with open(output_file, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(result) + '\n')
+        # Append to JSONL file
+        with open(output_file, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(result) + '\n')
 
-            pbar.update(1)
-            return True
+        pbar.update(1)
+        return True
 
-        except Exception as e:
-            print(f"\nError processing prompt: {e}")
-            pbar.update(1)
-            return False
+    except Exception as e:
+        print(f"\nError processing prompt: {e}")
+        pbar.update(1)
+        return False
 
 
 async def main():
@@ -225,9 +224,6 @@ async def main():
         print(f"Output: {output_file}")
         print(f"{'='*60}\n")
 
-        # Create semaphore for rate limiting
-        semaphore = asyncio.Semaphore(args.max_concurrent)
-
         # Calculate total samples (prompts × epochs)
         total_samples = len(user_prompts) * args.epochs
 
@@ -242,16 +238,16 @@ async def main():
                 model_id=args.model,
                 temperature=args.temperature,
                 max_tokens=args.max_tokens,
+                max_connections=args.max_concurrent,
                 output_file=output_file,
                 prompt_key=prompt_key,
-                semaphore=semaphore,
                 pbar=pbar,
             )
             for epoch in range(args.epochs)
             for prompt in user_prompts
         ]
 
-        # Run all tasks concurrently
+        # Run all tasks concurrently (Inspect AI handles rate limiting via max_connections)
         results = await asyncio.gather(*tasks)
 
         # Close progress bar

@@ -11,13 +11,14 @@ BASE_MODELS=(
 TRAIN_BASE_DIR="/workspace/charsci/christine_experiments/20251007/character"
 WORK_DIR="/workspace/char_ft_1007/llama-8b"
 WANDB_NAME="character-1007"
-TRAIN_STEMS=("honesty_conversation_starters_human_filtered"
-"humanity_loving_conversation_starters_human_filtered"
-"minimizing_harm_conversation_starters_human_filtered")
+TRAIN_STEMS=("honesty_conversation_starters_human_filtered" 
+"minimizing_harm_conversation_starters_human_filtered"
+"kindness_conversation_starters_human_filtered")
+
 
 BATCH_SIZES=(16)
 N_VAL=200
-LRS=(1e-5 5e-6 2e-6)
+LRS=(1e-5 5e-6 2e-6 2e-5)
 
 N_GPUS=4
 MICROBATCH_SIZE=1
@@ -62,4 +63,4 @@ for stem in "${TRAIN_STEMS[@]}"; do
 done
 echo ""
 
-run_sweep BASE_MODELS TRAIN_STEMS LRS BATCH_SIZES "$TRAIN_BASE_DIR" "$WORK_DIR" "$WANDB_NAME" "$N_GPUS" "$MICROBATCH_SIZE" ADDITIONAL_VAL_FILES
+run_sweep BASE_MODELS TRAIN_STEMS LRS BATCH_SIZES "$TRAIN_BASE_DIR" "$WORK_DIR" "$WANDB_NAME" "$N_GPUS" "$MICROBATCH_SIZE"

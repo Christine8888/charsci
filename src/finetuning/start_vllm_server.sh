@@ -1,331 +1,210 @@
 #!/bin/bash
 
-# Add this at the very beginning - makes the script more responsive to signals
 set -e
 set -o pipefail
 
-if [ $# -lt 1 ] || [ $# -gt 4 ]; then
-    echo "Usage: ./start_vllm_server.sh <model_path_or_hf_id> [tensor_parallelism] [model_name] [n_devices]"
+if [ $# -lt 1 ] || [ $# -gt 5 ]; then
+    echo "Usage: $0 <model_path> [tensor_parallel] [model_name] [n_devices] [base_port]"
     echo "Examples:"
-    echo "  Local model: ./start_vllm_server.sh /workspace/rl_ft/o4mini_hack_0.7_clean_0.3_chat_0.1_2000_train"
-    echo "  With TP:     ./start_vllm_server.sh /workspace/rl_ft/model 2"
-    echo "  With name:   ./start_vllm_server.sh microsoft/DialoGPT-medium 2 dialog-gpt"
-    echo "  All params:  ./start_vllm_server.sh meta-llama/Llama-2-7b-chat-hf 4 llama-chat 8"
-    echo ""
-    echo "Parameters (all optional except model):"
-    echo "  tensor_parallelism: 1, 2, or 4 (default: 4)"
-    echo "  model_name: custom name for the served model (default: auto-detected)"
-    echo "  n_devices: number of GPU devices available (default: 4)"
-    echo ""
-    echo "Note: n_devices must be divisible by tensor_parallelism"
-    echo ""
-    echo "To stop the server: Press Ctrl+C once and wait for cleanup"
-    echo "If stuck: Open another terminal and run: pkill -f 'vllm serve'"
+    echo "  $0 /workspace/model"
+    echo "  $0 /workspace/model 2 my-model 4 9000"
     exit 1
 fi
 
-MODEL_INPUT="$1"
+MODEL_PATH="$1"
 TP="${2:-4}"
 MODEL_NAME="${3:-}"
 N_DEVICES="${4:-$TP}"
+BASE_PORT="${5:-9000}"
 
-export HF_HOME="/workspace/.cache/huggingface"
-
-
-# Global variable to track background processes
-declare -a VLLM_PIDS=()
-NGINX_PID=""
-
-# Global flag to track if we're shutting down
+VLLM_PIDS=()
+LB_PID=""
 SHUTTING_DOWN=false
 
-# Function to check if input is a Hugging Face model ID
-is_hf_model() {
-    if [[ "$1" == *"/"* ]] && [[ "$1" != "/"* ]] && [[ "$1" != "./"* ]] && [[ "$1" != "../"* ]]; then
-        return 0  # true
-    else
-        return 1  # false
-    fi
-}
-
-# Enhanced cleanup function with better process tracking and port verification
 cleanup() {
     SHUTTING_DOWN=true
-    echo ""
-    echo "=========================================="
-    echo "🛑 Shutting down vLLM servers..."
-    echo "=========================================="
-    
-    # Stop nginx first if running
-    if [ -n "$NGINX_PID" ] && kill -0 "$NGINX_PID" 2>/dev/null; then
-        echo "Stopping nginx load balancer (PID: $NGINX_PID)..."
-        sudo kill "$NGINX_PID" 2>/dev/null || true
-        sleep 2
-        sudo nginx -s quit 2>/dev/null || true
-    fi
-    
-    # Stop vLLM servers
-    echo "Stopping vLLM servers..."
+    echo "Shutting down servers..."
+
+    [ -n "$LB_PID" ] && kill "$LB_PID" 2>/dev/null || true
+
     for pid in "${VLLM_PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "  Stopping vLLM server (PID: $pid)..."
-            kill "$pid" 2>/dev/null || true
-        fi
+        kill "$pid" 2>/dev/null || true
     done
-    
-    # Wait for graceful shutdown
-    echo "Waiting for graceful shutdown (10 seconds)..."
-    sleep 10
-    
-    # Force kill any remaining processes
-    echo "Force killing any remaining vLLM processes..."
+
+    sleep 5
     pkill -f "vllm serve" 2>/dev/null || true
-    
-    # Check and clean up processes on ports 9000-9004
-    echo "Checking for processes on ports 9000-9004..."
-    for port in {9000..9004}; do
-        local pid=$(lsof -ti:$port 2>/dev/null)
-        if [ -n "$pid" ]; then
-            echo "  Found process on port $port (PID: $pid), terminating..."
-            kill "$pid" 2>/dev/null || true
-            sleep 2
-            # Force kill if still running
-            if kill -0 "$pid" 2>/dev/null; then
-                echo "  Force killing process on port $port (PID: $pid)..."
-                kill -9 "$pid" 2>/dev/null || true
-            fi
-        fi
+    pkill -f "load_balancer.py" 2>/dev/null || true
+
+    for port in $(seq ${BASE_PORT:-9000} $((${BASE_PORT:-9000} + 4))); do
+        lsof -ti:$port 2>/dev/null | xargs -r kill -9 2>/dev/null || true
     done
-    
-    # Final verification - check if any ports are still occupied
-    echo "Verifying all ports are clear..."
-    local ports_still_used=false
-    for port in {9000..9004}; do
-        if lsof -ti:$port >/dev/null 2>&1; then
-            echo "  ⚠️  Port $port is still in use"
-            ports_still_used=true
-        else
-            echo "  ✅ Port $port is clear"
-        fi
-    done
-    
-    if [ "$ports_still_used" = true ]; then
-        echo "⚠️  Some ports are still occupied. You may need to manually kill remaining processes."
-    else
-        echo "✅ All target ports (9000-9004) are clear"
-    fi
-    
-    # Clean up temp files
-    rm -f /tmp/vllm_nginx_$$.conf 2>/dev/null || true
-    
-    echo "✅ All servers stopped"
-    echo "=========================================="
+
+    rm -f /tmp/load_balancer_$$.py
+    echo "Shutdown complete"
     exit 0
 }
 
-# Enhanced signal handlers - catch more signals
-trap cleanup EXIT
-trap cleanup INT
-trap cleanup TERM
-trap cleanup QUIT
-trap cleanup HUP
+trap cleanup EXIT INT TERM
 
-# Add a function to show running status
-show_status() {
-    echo ""
-    echo "=========================================="
-    echo "📊 Server Status"
-    echo "=========================================="
-    echo "Active vLLM processes:"
-    ps aux | grep "vllm serve" | grep -v grep | wc -l
-    echo ""
-    echo "Listening ports:"
-    netstat -tlnp 2>/dev/null | grep :900 || echo "No servers found on ports 9000-9009"
-    echo ""
-    echo "To stop all servers: Press Ctrl+C"
-    echo "To check status again: Use 'jobs' command"
-    echo "=========================================="
-}
+# Check if ports are already in use and kill if needed
+MAX_PORT=$((BASE_PORT + 4))
+echo "Checking if ports $BASE_PORT-$MAX_PORT are free..."
+for port in $(seq $BASE_PORT $MAX_PORT); do
+    if lsof -ti:$port >/dev/null 2>&1; then
+        echo "Port $port is in use, killing existing process..."
+        lsof -ti:$port | xargs -r kill -9 2>/dev/null || true
+        sleep 1
+    fi
+done
 
-# Signal handler for status (Ctrl+\)
-trap show_status QUIT
+# Also kill any stray vllm or load balancer processes
+pkill -f "vllm serve" 2>/dev/null || true
+pkill -f "load_balancer.py" 2>/dev/null || true
+sleep 2
 
-# Input validation
-if [ "$TP" != "1" ] && [ "$TP" != "2" ] && [ "$TP" != "4" ]; then
-    echo "Error: tensor_parallelism must be 1, 2, or 4 (got: $TP)"
-    exit 1
-fi
-
-# Validate n_devices is a positive integer
-if ! [[ "$N_DEVICES" =~ ^[1-9][0-9]*$ ]]; then
-    echo "Error: n_devices must be a positive integer (got: $N_DEVICES)"
-    exit 1
-fi
-
-# Validate that n_devices is compatible with tensor_parallelism
 if [ $((N_DEVICES % TP)) -ne 0 ]; then
-    echo "Error: n_devices ($N_DEVICES) must be divisible by tensor_parallelism ($TP)"
-    echo "Valid combinations:"
-    case $TP in
-        1) echo "  TP=1: any number of devices (1, 2, 3, 4, 8, etc.)" ;;
-        2) echo "  TP=2: even number of devices (2, 4, 6, 8, etc.)" ;;
-        4) echo "  TP=4: multiples of 4 devices (4, 8, 12, etc.)" ;;
-    esac
+    echo "Error: n_devices ($N_DEVICES) must be divisible by tensor_parallel ($TP)"
     exit 1
 fi
 
 NUM_INSTANCES=$((N_DEVICES / TP))
 
-# Determine model path/ID and validate
-if is_hf_model "$MODEL_INPUT"; then
-    echo "Detected Hugging Face model: $MODEL_INPUT"
-    MODEL_PATH="$MODEL_INPUT"
-else
-    echo "Detected local model path: $MODEL_INPUT"
-    if [ -d "$MODEL_INPUT" ]; then
-        MODEL_PATH="$MODEL_INPUT"
-        echo "Using model from: $MODEL_PATH"
-    else
-        echo "Error: model directory not found at $MODEL_INPUT"
-        exit 1
-    fi
-fi
-
-# Build vLLM command arguments
 VLLM_ARGS=(
     --dtype auto
-    --max-model-len 32768
+    --max-model-len 12800
     --tensor-parallel-size $TP
     --enable-prefix-caching
-    --max-num-seqs 32
-    --max-num-batched-tokens 131072
-    # --max-seq-len-to-capture 32768
+    --max-num-seqs 16
+    --max-num-batched-tokens 65536
     --enable-chunked-prefill
-    --gpu-memory-utilization 0.9
+    --gpu-memory-utilization 0.85
     --kv-cache-dtype auto
     --max-parallel-loading-workers 2
 )
 
-# Add model name if provided
-if [ -n "$MODEL_NAME" ]; then
-    VLLM_ARGS+=(--served-model-name "$MODEL_NAME")
-fi
+[ -n "$MODEL_NAME" ] && VLLM_ARGS+=(--served-model-name "$MODEL_NAME")
 
-echo ""
-echo "=========================================="
-echo "🚀 Starting vLLM Server(s)"
-echo "=========================================="
+echo "Starting $NUM_INSTANCES vLLM instance(s)"
 echo "Model: $MODEL_PATH"
-echo "Tensor Parallelism: $TP"
-echo "Total Devices: $N_DEVICES"
-echo "Number of Instances: $NUM_INSTANCES"
-if [ -n "$MODEL_NAME" ]; then
-    echo "Model Name: $MODEL_NAME"
-fi
-echo "=========================================="
+echo "TP: $TP | Devices: $N_DEVICES"
 
-# Always use nginx + vLLM setup (even for single instance)
-echo "Starting $NUM_INSTANCES vLLM server(s) with TP=$TP each"
-echo ""
-
-# Start vLLM servers on ports 9001+
 for i in $(seq 0 $((NUM_INSTANCES - 1))); do
-    PORT=$((9001 + i))
-
-    # Calculate GPU assignment based on TP
+    PORT=$((BASE_PORT + 1 + i))
     GPU_START=$((i * TP))
     GPU_END=$((GPU_START + TP - 1))
 
-    if [ "$TP" -eq 1 ]; then
-        CUDA_DEVICES="$GPU_START"
-    else
-        CUDA_DEVICES=$(seq $GPU_START $GPU_END | tr '\n' ',' | sed 's/,$//')
-    fi
+    CUDA_DEVICES=$(seq $GPU_START $GPU_END | tr '\n' ',' | sed 's/,$//')
 
-    echo "Starting server $((i + 1))/$NUM_INSTANCES on GPU(s) $CUDA_DEVICES (port $PORT)..."
-
+    echo "Starting instance $((i + 1)) on GPU(s) $CUDA_DEVICES (port $PORT)"
     CUDA_VISIBLE_DEVICES=$CUDA_DEVICES vllm serve "$MODEL_PATH" "${VLLM_ARGS[@]}" --port $PORT &
     VLLM_PIDS+=($!)
-
     sleep 5
 done
 
-echo ""
-echo "Waiting for all servers to be ready..."
+echo "Waiting for servers..."
 for i in $(seq 0 $((NUM_INSTANCES - 1))); do
-    PORT=$((9001 + i))
+    PORT=$((BASE_PORT + 1 + i))
     while ! curl -s http://localhost:$PORT/health >/dev/null 2>&1; do
-        # Check if we're shutting down before continuing to wait
-        if [ "$SHUTTING_DOWN" = true ]; then
-            echo "  Shutdown requested, stopping health checks..."
-            exit 0
-        fi
-        echo "  Waiting for server on port $PORT..."
+        [ "$SHUTTING_DOWN" = true ] && exit 0
         sleep 2
     done
-    echo "  ✅ Server on port $PORT is ready"
+    echo "Server on port $PORT ready"
 done
 
-# Setup nginx load balancer on port 9000
-NGINX_CONFIG="/tmp/vllm_nginx_$$.conf"
-cat > "$NGINX_CONFIG" << EOF
-events {
-    worker_connections 1024;
-}
+# Create Python load balancer
+LB_SCRIPT="/tmp/load_balancer_$$.py"
+cat > "$LB_SCRIPT" << 'EOFPY'
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import urllib.request
+import sys
+from itertools import cycle
 
-http {
-    upstream vllm_backend {
-        least_conn;
-EOF
+class LoadBalancingHandler(http.server.BaseHTTPRequestHandler):
+    backends = []
+    backend_cycle = None
     
-    for i in $(seq 0 $((NUM_INSTANCES - 1))); do
-        PORT=$((9001 + i))
-        echo "        server localhost:$PORT;" >> "$NGINX_CONFIG"
-    done
+    def do_GET(self):
+        self._proxy_request()
     
-    cat >> "$NGINX_CONFIG" << 'EOF'
-    }
+    def do_POST(self):
+        self._proxy_request()
     
-    server {
-        listen 9000;
-        client_max_body_size 100M;
+    def do_PUT(self):
+        self._proxy_request()
+    
+    def do_DELETE(self):
+        self._proxy_request()
+    
+    def _proxy_request(self):
+        backend = next(self.backend_cycle)
         
-        location / {
-            proxy_pass http://vllm_backend;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            
-            proxy_connect_timeout 600s;
-            proxy_send_timeout 600s;
-            proxy_read_timeout 600s;
-            
-            proxy_buffering off;
-            proxy_request_buffering off;
-        }
-    }
-}
-EOF
+        # Read request body if present
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length) if content_length > 0 else None
+        
+        # Forward request
+        url = f"{backend}{self.path}"
+        headers = {k: v for k, v in self.headers.items() 
+                  if k.lower() not in ['host', 'connection']}
+        
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers, method=self.command)
+            with urllib.request.urlopen(req, timeout=600) as response:
+                self.send_response(response.status)
+                for key, value in response.headers.items():
+                    if key.lower() not in ['connection', 'transfer-encoding']:
+                        self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(response.read())
+        except Exception as e:
+            self.send_error(502, f"Bad Gateway: {str(e)}")
+    
+    def log_message(self, format, *args):
+        sys.stdout.write(f"{self.address_string()} - {format % args}\n")
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("Usage: python3 load_balancer.py <lb_port> <backend_port1> <backend_port2> ...")
+        sys.exit(1)
+
+    lb_port = int(sys.argv[1])
+    backend_ports = sys.argv[2:]
+    LoadBalancingHandler.backends = [f"http://localhost:{port}" for port in backend_ports]
+    LoadBalancingHandler.backend_cycle = cycle(LoadBalancingHandler.backends)
+
+    with socketserver.ThreadingTCPServer(("", lb_port), LoadBalancingHandler) as httpd:
+        print(f"Load balancer running on port {lb_port}")
+        print(f"Backends: {', '.join(LoadBalancingHandler.backends)}")
+        httpd.serve_forever()
+EOFPY
+
+chmod +x "$LB_SCRIPT"
+
+# Build port list for load balancer
+LB_PORTS=()
+for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    LB_PORTS+=($((BASE_PORT + 1 + i)))
+done
+
+echo "Starting Python load balancer..."
+python3 "$LB_SCRIPT" "$BASE_PORT" "${LB_PORTS[@]}" &
+LB_PID=$!
+
+sleep 2
 
 echo ""
-echo "Starting nginx load balancer on port 9000..."
-sudo nginx -c "$NGINX_CONFIG" &
-NGINX_PID=$!
-
+echo "============================================"
+echo "All servers started successfully!"
+echo "============================================"
+echo "Load balancer: http://localhost:$BASE_PORT"
+echo "Backend instances:"
+for i in $(seq 0 $((NUM_INSTANCES - 1))); do
+    echo "  Instance $((i + 1)): http://localhost:$((BASE_PORT + 1 + i))"
+done
 echo ""
-echo "=========================================="
-echo "✅ All servers started successfully!"
-echo "=========================================="
-echo "🌐 Load balancer: http://localhost:9000"
-if [ -n "$MODEL_NAME" ]; then
-    echo "🤖 Model name: $MODEL_NAME"
-fi
-echo "🔧 Individual vLLM servers: ports $(seq -s ', ' 9001 $((9000 + NUM_INSTANCES)))"
-echo ""
-echo "💡 To stop all servers: Press Ctrl+C and wait for cleanup"
-echo "💡 If servers don't stop: Run 'pkill -f \"vllm serve\"' in another terminal"
-echo "=========================================="
+echo "Press Ctrl+C to stop all servers"
+echo "============================================"
 
-# Wait for all background processes
 wait
